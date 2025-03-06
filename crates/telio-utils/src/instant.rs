@@ -9,17 +9,12 @@ pub struct TelioInstant(Instant);
 impl TelioInstant {
     /// https://www.manpagez.com/man/3/clock_gettime/
     /// Return instant bound to the current point in time
-    pub fn now() -> Self {
-        #[cfg(target_vendor = "apple")]
-        const CLOCK_ID: libc::clockid_t = libc::CLOCK_MONOTONIC;
-
+    pub fn now() -> Instant {
         #[cfg(not(target_vendor = "apple"))]
-        const CLOCK_ID: libc::clockid_t = libc::CLOCK_BOOTTIME;
 
-        println!("Using custom clock source!");
+        const clock_id: libc::clockid_t = libc::CLOCK_BOOTTIME;
 
-        // Replace with actual custom time fetching if needed
-        Self(Instant::now())
+        Instant(Timespec::now(clock_id))
     }
 
     /// Return elapsed duration for the instant
