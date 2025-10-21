@@ -10,7 +10,7 @@ use pnet_packet::{
     icmpv6::{Icmpv6Type, Icmpv6Types},
     tcp::TcpFlags,
 };
-use smallvec::ToSmallVec;
+use std::path::PathBuf;
 use std::{
     ffi::c_void,
     fmt::Debug,
@@ -31,13 +31,7 @@ use crate::{
         ConnectionState, Direction, FfiChainGuard, Filter, FilterData, NetworkFilterData,
         NextLevelProtocol, Rule,
     },
-    ffi_chain::{LibfwChain, LibfwVerdict},
-    libfirewall_api::{
-        libfw_configure_chain, libfw_deinit, libfw_init, libfw_process_inbound_packet,
-        libfw_process_outbound_packet, libfw_set_log_callback,
-        libfw_trigger_stale_connection_close, LibfwFirewall,
-    },
-    log::LibfwLogLevel,
+    libfirewall::{Libfirewall, LibfwChain, LibfwFirewall, LibfwLogLevel, LibfwVerdict},
 };
 
 /// HashSet type used internally by firewall and returned by get_peer_whitelist
@@ -176,6 +170,8 @@ struct Whitelist {
 
 /// Statefull packet-filter firewall.
 pub struct StatefullFirewall {
+    /// Firewall loaded library
+    firewall_lib: Libfirewall,
     /// Libfirewall instance
     firewall: *mut LibfwFirewall,
     /// Whitelist of networks/peers allowed to connect
@@ -205,21 +201,46 @@ impl LocalInterfacesObserver for StatefullFirewall {
 impl Drop for StatefullFirewall {
     fn drop(&mut self) {
         unsafe {
-            libfw_deinit(self.firewall);
+            (self.firewall_lib.libfw_deinit)(self.firewall);
         }
     }
 }
 
 impl StatefullFirewall {
     /// Constructs firewall with libfw structure pointer
-    pub fn new(use_ipv6: bool, feature: &FeatureFirewall) -> Self {
+    pub fn new(use_ipv6: bool, feature: &FeatureFirewall) -> Result<Self, ::libloading::Error> {
+        #[cfg(target_os = "linux")]
+        let lib_name = "libfirewall.so";
+        #[cfg(target_os = "macos")]
+        let lib_name = "libfirewall.dylib";
+        #[cfg(target_os = "windows")]
+        let lib_name = "libfirewall.dll";
+
+        // We want to use this path when these are our tests or libtelio tests
+        #[cfg(any(test, feature = "mockall"))]
+        let libfirewall_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../dist")
+            .join(lib_name);
+        #[cfg(not(any(test, feature = "mockall")))]
+        let libfirewall_path = PathBuf::from(lib_name);
+
+        // Dynamically load libfirewall
+        let firewall_lib = unsafe { Libfirewall::new(libfirewall_path)? };
+
         // Let's initialize libfirewall logging first.
         // We use TRACE level, which will be telio's level in pracice,
         // as we use telio logging macros inside.
-        libfw_set_log_callback(LibfwLogLevel::LibfwLogLevelTrace, Some(log_callback));
+        unsafe {
+            firewall_lib
+                .libfw_set_log_callback(LibfwLogLevel::LibfwLogLevelTrace, Some(log_callback));
+        }
+
+        // Create firewall instance
+        let firewall = unsafe { firewall_lib.libfw_init() };
 
         let result = Self {
-            firewall: libfw_init(),
+            firewall_lib,
+            firewall,
             whitelist: RwLock::new(Whitelist::default()),
             allow_ipv6: use_ipv6,
             ip_addresses: RwLock::new(Vec::<StdIpAddr>::new()),
@@ -254,7 +275,7 @@ impl StatefullFirewall {
 
         result.recreate_chain();
 
-        result
+        Ok(result)
     }
 
     fn dst_net_all_ports_filter(net: IpNet, inverted: bool) -> Filter {
@@ -387,7 +408,7 @@ impl StatefullFirewall {
         if let Some(vpn_pk) = self.whitelist.read().vpn_peer {
             rules.push(Rule {
                 filters: vec![Filter {
-                    filter_data: FilterData::AssociatedData(Some(vpn_pk.to_smallvec())),
+                    filter_data: FilterData::AssociatedData(Some(vpn_pk.to_vec())),
                     inverted: false,
                 }],
                 action: LibfwVerdict::LibfwVerdictAccept,
@@ -401,7 +422,7 @@ impl StatefullFirewall {
         {
             for local_net in local_network_filters.iter() {
                 let mut filters = vec![Filter {
-                    filter_data: FilterData::AssociatedData(Some(peer.to_smallvec())),
+                    filter_data: FilterData::AssociatedData(Some(peer.to_vec())),
                     inverted: false,
                 }];
                 filters.extend_from_slice(local_net);
@@ -431,7 +452,7 @@ impl StatefullFirewall {
                 rules.push(Rule {
                     filters: vec![
                         Filter {
-                            filter_data: FilterData::AssociatedData(Some(peer.to_smallvec())),
+                            filter_data: FilterData::AssociatedData(Some(peer.to_vec())),
                             inverted: false,
                         },
                         Self::dst_net_all_ports_filter(IpNet::from(*ip), false),
@@ -488,7 +509,7 @@ impl StatefullFirewall {
                     rules.push(Rule {
                         filters: vec![
                             Filter {
-                                filter_data: FilterData::AssociatedData(Some(peer.to_smallvec())),
+                                filter_data: FilterData::AssociatedData(Some(peer.to_vec())),
                                 inverted: false,
                             },
                             Filter {
@@ -519,7 +540,7 @@ impl StatefullFirewall {
         for peer in self.whitelist.read().peer_whitelists[Permissions::RoutingConnections].iter() {
             rules.push(Rule {
                 filters: vec![Filter {
-                    filter_data: FilterData::AssociatedData(Some(peer.to_smallvec())),
+                    filter_data: FilterData::AssociatedData(Some(peer.to_vec())),
                     inverted: false,
                 }],
                 action: LibfwVerdict::LibfwVerdictAccept,
@@ -528,7 +549,7 @@ impl StatefullFirewall {
 
         let ffi_chain_guard: FfiChainGuard = (rules.as_slice()).into();
         unsafe {
-            libfw_configure_chain(
+            self.firewall_lib.libfw_configure_chain(
                 self.firewall,
                 (&ffi_chain_guard.ffi_chain) as *const LibfwChain,
             )
@@ -637,7 +658,7 @@ impl Firewall for StatefullFirewall {
         let sink_ptr = &sink as *const &mut dyn io::Write;
         LibfwVerdict::LibfwVerdictAccept
             == unsafe {
-                libfw_process_outbound_packet(
+                self.firewall_lib.libfw_process_outbound_packet(
                     self.firewall,
                     buffer.as_ptr(),
                     buffer.len(),
@@ -656,7 +677,7 @@ impl Firewall for StatefullFirewall {
     fn process_inbound_packet(&self, public_key: &[u8; 32], buffer: &[u8]) -> bool {
         LibfwVerdict::LibfwVerdictAccept
             == unsafe {
-                libfw_process_inbound_packet(
+                self.firewall_lib.libfw_process_inbound_packet(
                     self.firewall,
                     buffer.as_ptr(),
                     buffer.len(),
@@ -672,7 +693,7 @@ impl Firewall for StatefullFirewall {
         telio_log_debug!("Constructing connetion reset packets");
         let sink_ptr = &sink as *const &mut dyn io::Write;
         unsafe {
-            libfw_trigger_stale_connection_close(
+            self.firewall_lib.libfw_trigger_stale_connection_close(
                 self.firewall,
                 pubkey.as_ptr(),
                 pubkey.len(),
@@ -689,18 +710,9 @@ impl Firewall for StatefullFirewall {
     }
 }
 
-/// The default initialization of Firewall object
-impl Default for StatefullFirewall {
-    fn default() -> Self {
-        Self::new(true, &FeatureFirewall::default())
-    }
-}
-
 #[cfg(any(test, feature = "test_utils"))]
 #[allow(missing_docs, unused)]
 pub mod tests {
-    use crate::error::LibfwResult;
-
     use super::*;
     use pnet_packet::{
         icmp::{
@@ -1066,7 +1078,7 @@ pub mod tests {
             },
         ];
         for TestInput { src1, src2, src3, src4, src5, dst1, dst2, make_udp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default()).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
             // Should FAIL (no matching outgoing connections yet)
             assert_eq!(fw.process_inbound_packet(&make_peer(), &make_udp(dst1, src1)), false);
@@ -1128,7 +1140,7 @@ pub mod tests {
             },
         ];
         for TestInput { src1, src2, src3, src4, src5, dst1, dst2, make_tcp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),]);
 
             // Should FAIL (no matching outgoing connections yet)
@@ -1196,7 +1208,7 @@ pub mod tests {
             },
         ];
         for TestInput { src1, src2, src3, src4, src5, dst1, dst2, make_udp , is_ipv4} in test_inputs {
-            let fw = StatefullFirewall::new(false, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(false, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
             // Should FAIL (no matching outgoing connections yet)
             assert_eq!(fw.process_inbound_packet(&make_peer(), &make_udp(dst1, src1)), false);
@@ -1240,7 +1252,7 @@ pub mod tests {
             TestInput{ us: "[::1]:1111",     them: "[2001:4860:4860::8888]:8888",  make_tcp: &make_tcp6 },
         ];
         for test_input @ TestInput { us, them, make_tcp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
             let peer = make_peer();
 
@@ -1280,7 +1292,7 @@ pub mod tests {
             TestInput{ us: "[::1]:1111",     them: "[2001:4860:4860::8888]:8888",  make_tcp: &make_tcp6 },
         ];
         for test_input @ TestInput { us, them, make_tcp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),]);
             let peer = make_peer();
 
@@ -1311,7 +1323,7 @@ pub mod tests {
         ];
         for test_input @ TestInput { us, them, make_tcp } in test_inputs {
             let ttl = 20;
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),]);
             let peer = make_peer();
 
@@ -1349,7 +1361,7 @@ pub mod tests {
             TestInput { src1: "2001:4860:4860::8888", src2: "2001:4860:4860::8844", src3: "2001:4860:4860::4444", dst: "::1",       make_icmp: &make_icmp6_with_body },
         ];
         for TestInput{ src1, src2, src3, dst, make_icmp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),]);
 
             let request1 = make_icmp(dst, src1, IcmpTypes::EchoRequest.into(), &[1, 0, 1, 0]);
@@ -1390,7 +1402,7 @@ pub mod tests {
             TestInput { src: "2001:4860:4860::8888", dst: "::1",       make_icmp: &make_icmp6_with_body },
         ];
         for TestInput{ src, dst, make_icmp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default()).expect("Library loading failure");
             fw.set_ip_addresses(vec![StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),]);
 
             let request = make_icmp(dst, src, IcmpTypes::EchoRequest.into(), &[1, 0, 1, 0]);
@@ -1475,7 +1487,8 @@ pub mod tests {
                         continue;
                     }
 
-                    let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+                    let fw = StatefullFirewall::new(true, &FeatureFirewall::default())
+                        .expect("Library loading failure");
                     fw.set_ip_addresses(vec![
                         StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),
                         StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -1518,7 +1531,8 @@ pub mod tests {
                 &make_icmp6_with_body,
             ),
         ] {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default())
+                .expect("Library loading failure");
             fw.set_ip_addresses(vec![
                 StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),
                 StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -1597,7 +1611,8 @@ pub mod tests {
                 &make_icmp6_with_body,
             ),
         ] {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default())
+                .expect("Library loading failure");
             fw.set_ip_addresses(vec![
                 StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),
                 StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -1676,7 +1691,8 @@ pub mod tests {
                 &make_icmp6_with_body,
             ),
         ] {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default())
+                .expect("Library loading failure");
             fw.set_ip_addresses(vec![
                 StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),
                 StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -1723,7 +1739,7 @@ pub mod tests {
         let src2 = "8.8.4.4";
         let dst = "127.0.0.1";
 
-        let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+        let fw = StatefullFirewall::new(true, &FeatureFirewall::default()).expect("Library loading failure");
 
         // Firewall only allow inbound ICMP packets that are either whitelisted or that exist in the ICMP cache
         // The ICMP cache only accepts a small number of ICMP types, but unrelated to that, this test ignores the cache completely
@@ -1759,7 +1775,7 @@ pub mod tests {
         let src2 = "2001:4860:4860::8844";
         let dst = "::1";
 
-        let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+        let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
 
         // Firewall only allow inbound ICMP packets that are either whitelisted or that exist in the ICMP cache
         // The ICMP cache only accepts a small number of ICMP types, but unrelated to that, this test ignores the cache completely
@@ -1810,7 +1826,7 @@ pub mod tests {
             let fw = StatefullFirewall::new(true, &FeatureFirewall {
                 outgoing_blacklist: blacklist.clone(),
                 ..Default::default()
-            },);
+            },).expect("Library loading failure");
             fw.set_ip_addresses(vec![
                 StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),
                 StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -1824,7 +1840,7 @@ pub mod tests {
     #[rustfmt::skip]
     #[test]
     fn firewall_whitelist_crud() {
-        let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+        let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
         assert!(fw.get_peer_whitelist(Permissions::IncomingConnections).is_empty());
 
         let peer = make_random_peer();
@@ -1889,7 +1905,7 @@ pub mod tests {
                 let expected = [(0,0), (1,1)];
                 let mut feature = FeatureFirewall::default();
                 feature.neptun_reset_conns = true;
-                let fw = StatefullFirewall::new(true, &feature);
+                let fw = StatefullFirewall::new(true, &feature).expect("Library loading failure");
                 fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
                 let peer1 = make_random_peer();
                 let peer2 = make_random_peer();
@@ -1950,7 +1966,7 @@ pub mod tests {
             for TestInput { src1, src2, dst1, make_udp, make_tcp } in &test_inputs {
                 let expected = [(0,0), (1,1), (1,0)];
                 let mut feature = FeatureFirewall::default();
-                let fw = StatefullFirewall::new(true, &feature);
+                let fw = StatefullFirewall::new(true, &feature).expect("Library loading failure");
                 fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
                 let peer1 = make_random_peer();
                 let peer2 = make_random_peer();
@@ -1994,7 +2010,7 @@ pub mod tests {
         for TestInput { us, them, make_icmp, is_v4 } in &test_inputs {
             let mut feature = FeatureFirewall::default();
             // Set number of conntrack entries to 0 to test only the whitelist
-            let fw = StatefullFirewall::new(true, &feature);
+            let fw = StatefullFirewall::new(true, &feature).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
 
             let peer = make_random_peer();
@@ -2028,7 +2044,7 @@ pub mod tests {
         ];
 
         for TestInput { us, them, make_udp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
 
             let them_peer = make_random_peer();
@@ -2055,7 +2071,7 @@ pub mod tests {
         ];
 
         for TestInput { us, them, make_udp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
             let them_peer = make_random_peer();
 
@@ -2079,7 +2095,7 @@ pub mod tests {
             TestInput{ us: "[::1]:1111",     them: "[2001:4860:4860::8888]:8888",  make_tcp: &make_tcp6, },
         ];
         for TestInput { us, them, make_tcp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
 
             let them_peer = make_random_peer();
@@ -2107,7 +2123,7 @@ pub mod tests {
             TestInput{ us: "[::1]:1111",     them: "[2001:4860:4860::8888]:8888",  make_tcp: &make_tcp6, },
         ];
         for TestInput { us, them, make_tcp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
 
             let them_peer = make_random_peer();
@@ -2158,7 +2174,7 @@ pub mod tests {
             let expected = [(0,0),(0,1)];
             for TestInput { src1, src2, dst, make_udp, make_tcp, make_icmp } in &test_inputs {
                 let mut feature = FeatureFirewall::default();
-                let fw = StatefullFirewall::new(true, &feature);
+                let fw = StatefullFirewall::new(true, &feature).expect("Library loading failure");
                 fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
                 assert!(fw.get_peer_whitelist(Permissions::IncomingConnections).is_empty());
 
@@ -2230,7 +2246,7 @@ pub mod tests {
         {
             let mut feature = FeatureFirewall::default();
             feature.neptun_reset_conns = true;
-            let fw = StatefullFirewall::new(true, &feature);
+            let fw = StatefullFirewall::new(true, &feature).expect("Library loading failure");
             fw.set_ip_addresses(vec![
                 StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)),
                 StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -2395,7 +2411,7 @@ pub mod tests {
             }
         ];
         for test_input @ TestInput { src, dst, make_udp, make_tcp, make_icmp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),);
+            let fw = StatefullFirewall::new(true, &FeatureFirewall::default(),).expect("Library loading failure");
             fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))), StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))]);
             assert!(fw.get_peer_whitelist(Permissions::IncomingConnections).is_empty());
             assert!(fw.get_port_whitelist().is_empty());
@@ -2426,7 +2442,8 @@ pub mod tests {
 
     #[test]
     fn firewall_tcp_conns_reset() {
-        let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+        let fw = StatefullFirewall::new(true, &FeatureFirewall::default())
+            .expect("Library loading failure");
         fw.set_ip_addresses(vec![
             StdIpv4Addr::LOCALHOST.into(),
             StdIpv6Addr::LOCALHOST.into(),
@@ -2617,7 +2634,8 @@ pub mod tests {
 
     #[test]
     fn firewall_udp_conns_reset() {
-        let fw = StatefullFirewall::new(true, &FeatureFirewall::default());
+        let fw = StatefullFirewall::new(true, &FeatureFirewall::default())
+            .expect("Library loading failure");
         let peer = make_peer();
         fw.add_to_port_whitelist(PublicKey(peer), FILE_SEND_PORT);
 
@@ -2683,7 +2701,8 @@ pub mod tests {
         let src1 = "127.0.0.1:2000";
         let src2 = "127.0.0.1";
 
-        let fw = StatefullFirewall::new(false, &FeatureFirewall::default());
+        let fw = StatefullFirewall::new(false, &FeatureFirewall::default())
+            .expect("Library loading failure");
         fw.set_ip_addresses(vec![(StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1)))]);
         let good_peer = make_random_peer();
         let bad_peer = make_random_peer();
@@ -2715,7 +2734,8 @@ pub mod tests {
         let them = "8.8.8.8:8888";
         let random = "192.168.0.1:7777";
 
-        let fw = StatefullFirewall::new(false, &Default::default());
+        let fw =
+            StatefullFirewall::new(false, &Default::default()).expect("Library loading failure");
         fw.set_ip_addresses(vec![
             (StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))),
             StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -2759,7 +2779,7 @@ pub mod tests {
         let expected = (0, 1);
         for TestInput { src, dst, make_udp } in &test_inputs {
             let mut feature = FeatureFirewall::default();
-            let fw = StatefullFirewall::new(true, &feature);
+            let fw = StatefullFirewall::new(true, &feature).expect("Library loading failure");
             fw.set_ip_addresses(vec![
                 (StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))),
                 StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
@@ -2811,7 +2831,7 @@ pub mod tests {
         features.neptun_reset_conns = true;
 
         for TestInput { src, dst, make_tcp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &features);
+            let fw = StatefullFirewall::new(true, &features).expect("Library loading failure");
             fw.add_vpn_peer(PublicKey::new(peer));
 
             assert!(fw.process_inbound_packet(&peer, &make_tcp(dst, src, TcpFlags::SYN)));
@@ -2851,7 +2871,7 @@ pub mod tests {
             (0..u8::max_value()).filter(|flags| *flags & (TcpFlags::SYN | TcpFlags::ACK) == 0)
         {
             for TestInput { src, dst, make_tcp } in &test_inputs {
-                let fw = StatefullFirewall::new(true, &features);
+                let fw = StatefullFirewall::new(true, &features).expect("Library loading failure");
                 fw.add_vpn_peer(PublicKey::new(peer));
 
                 assert!(fw.process_inbound_packet(&peer, &make_tcp(dst, src, TcpFlags::SYN)));
@@ -2883,7 +2903,7 @@ pub mod tests {
         let mut features = FeatureFirewall::default();
 
         for TestInput { src, dst, make_tcp } in test_inputs {
-            let fw = StatefullFirewall::new(true, &features);
+            let fw = StatefullFirewall::new(true, &features).expect("Library loading failure");
             fw.set_ip_addresses(vec![
                 (StdIpAddr::V4(StdIpv4Addr::new(127, 0, 0, 1))),
                 StdIpAddr::V6(StdIpv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
