@@ -452,6 +452,18 @@ impl StatefullFirewall {
                 action: LibfwVerdict::LibfwVerdictAccept,
             });
 
+            // And packets related to them
+            rules.push(Rule {
+                filters: vec![
+                    Filter {
+                        filter_data: FilterData::ConntrackState(ConnectionState::Related),
+                        inverted: false,
+                    },
+                    Self::dst_net_all_ports_filter(IpNet::from(*ip), false),
+                ],
+                action: LibfwVerdict::LibfwVerdictAccept,
+            });
+
             // Accept certain TCP packets for finished connections
             rules.push(Rule {
                 filters: vec![
@@ -692,6 +704,7 @@ pub mod tests {
     use super::*;
     use pnet_packet::{
         icmp::{
+            self,
             destination_unreachable::{self, DestinationUnreachablePacket},
             IcmpPacket, IcmpType, MutableIcmpPacket,
         },
@@ -953,14 +966,18 @@ pub mod tests {
         icmp_type: GenericIcmpType,
         body: &[u8],
     ) -> Vec<u8> {
-        let additional_body_len = body.len().saturating_sub(14);
-        let ip_len = IPV4_HEADER_MIN + ICMP_HEADER + 10 + additional_body_len;
+        let ip_len = IPV4_HEADER_MIN + ICMP_HEADER + body.len();
         let mut raw = vec![0u8; ip_len];
 
-        let icmp_type: GenericIcmpType = (icmp_type).into();
         let mut packet =
             MutableIcmpPacket::new(&mut raw[IPV4_HEADER_MIN..]).expect("ICMP: Bad ICMP buffer");
         packet.set_icmp_type(icmp_type.v4());
+        packet.set_payload(&body);
+        packet.set_checksum(0);
+
+        let icmp_packet =
+            IcmpPacket::new(packet.packet()).expect("It should be a valid ICMP packet");
+        packet.set_checksum(icmp::checksum(&icmp_packet));
 
         let mut ip = MutableIpv4Packet::new(&mut raw).expect("ICMP: Bad IP buffer");
         set_ipv4(
@@ -971,11 +988,6 @@ pub mod tests {
         );
         ip.set_source(src.parse().expect("ICMP: Bad src IP"));
         ip.set_destination(dst.parse().expect("ICMP: Bad dst IP"));
-
-        let body_start = 14.max(body.len());
-        for (i, b) in body.iter().enumerate() {
-            raw[ip_len - (body_start - i)] = *b;
-        }
 
         raw
     }
@@ -998,6 +1010,12 @@ pub mod tests {
         let mut packet =
             MutableIcmpv6Packet::new(&mut raw[IPV6_HEADER_MIN..]).expect("ICMP: Bad ICMP buffer");
         packet.set_icmpv6_type(icmp_type.v6());
+        packet.set_payload(&body);
+        packet.set_checksum(0);
+
+        let icmp_packet =
+            IcmpPacket::new(packet.packet()).expect("It should be a valid ICMP packet");
+        packet.set_checksum(icmp::checksum(&icmp_packet));
 
         let mut ip = MutableIpv6Packet::new(&mut raw).expect("ICMP: Bad IP buffer");
         set_ipv6(
@@ -1008,11 +1026,6 @@ pub mod tests {
         );
         ip.set_source(src.parse().expect("ICMP: Bad src IP"));
         ip.set_destination(dst.parse().expect("ICMP: Bad dst IP"));
-
-        let body_start = 14.max(body.len());
-        for (i, b) in body.iter().enumerate() {
-            raw[ip_len - (body_start - i)] = *b;
-        }
 
         raw
     }
@@ -1386,7 +1399,8 @@ pub mod tests {
             let reply3 = make_icmp(src, dst, IcmpTypes::EchoReply.into(), &[2, 0, 1, 0]);
 
             assert_eq!(fw.process_outbound_packet(&make_peer(), &request), true);
-            assert_eq!(fw.process_inbound_packet(&make_peer(), &reply2), false);
+            // Conntrack checks only identifier, doesn't care about SEQ number
+            assert_eq!(fw.process_inbound_packet(&make_peer(), &reply2), true);
             assert_eq!(fw.process_inbound_packet(&make_peer(), &reply3), false);
             assert_eq!(fw.process_inbound_packet(&make_peer(), &reply1), true);
         }
