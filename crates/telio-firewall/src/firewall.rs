@@ -209,9 +209,9 @@ impl Drop for StatefullFirewall {
 impl StatefullFirewall {
     /// Constructs firewall with libfw structure pointer
     pub fn new(use_ipv6: bool, feature: &FeatureFirewall) -> Result<Self, ::libloading::Error> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         let lib_name = "libfirewall.so";
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos",))]
         let lib_name = "libfirewall.dylib";
         #[cfg(target_os = "windows")]
         let lib_name = "libfirewall.dll";
