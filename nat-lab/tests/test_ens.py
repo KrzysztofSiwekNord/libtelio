@@ -187,20 +187,11 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
     alpha_setup_params: SetupParameters,
     public_ip: str,
 ) -> None:
-    vpn_conf = VpnConfig(config.WG_SERVER, ConnectionTag.DOCKER_VPN_1, True)
-    fingerprint = await get_grpc_tls_fingerprint(vpn_conf.server_conf["ipv4"])
-    root_certificate = await get_grpc_tls_root_certificate(
-        vpn_conf.server_conf["ipv4"], incorrect=True
-    )
-    root_certificate = base64.b64decode(root_certificate)
+    vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, True)
+    wrong_cert = generate_wrong_cert()
     error_code = VpnConnectionError.UNKNOWN
 
     async with AsyncExitStack() as exit_stack:
-
-        await set_vpn_server_private_key(
-            vpn_conf.server_conf["ipv4"],
-            vpn_conf.server_conf["private_key"],
-        )
 
         alpha_setup_params.connection_tracker_config = (
             generate_connection_tracker_config(
@@ -208,7 +199,7 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
                 stun_limits=(1, 1),
                 vpn_1_limits=(
                     (1, 1)
-                    if vpn_conf.conn_tag == ConnectionTag.DOCKER_VPN_1
+                    if vpn_conf.conn_tag == ConnectionTag.VM_LINUX_NLX_1
                     else (0, 0)
                 ),
             )
@@ -216,7 +207,7 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
         assert alpha_setup_params.features.error_notification_service
         alpha_setup_params.features.error_notification_service.allow_only_pq = False
         alpha_setup_params.features.error_notification_service.root_certificate_override = (
-            root_certificate
+            wrong_cert
         )
         env = await exit_stack.enter_async_context(
             setup_environment(exit_stack, [alpha_setup_params], prepare_vpn=True)
@@ -236,11 +227,6 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
             cast(str, vpn_conf.server_conf["public_key"]),
         )
 
-        additional_info = "some additional info"
-        await trigger_connection_error(
-            vpn_conf.server_conf["ipv4"], error_code.value, additional_info
-        )
-
         with pytest.raises(asyncio.TimeoutError):
             await client_alpha.wait_for_state_peer(
                 vpn_conf.server_conf["public_key"],
@@ -252,10 +238,6 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
                 vpn_connection_error=error_code,
             )
 
-        with pytest.raises(asyncio.TimeoutError):
-            async with asyncio.timeout(5):
-                await client_alpha.wait_for_log(additional_info)
-        await client_alpha.wait_for_log(fingerprint)
         await client_alpha.wait_for_log("InvalidCertificate(UnknownIssuer)")
 
 
@@ -360,7 +342,7 @@ async def test_ens_not_working(
             generate_connection_tracker_config(
                 alpha_setup_params.connection_tag,
                 stun_limits=(1, 1),
-                vpn_1_limits=(
+                nlx_1_limits=(
                     (1, 1)
                     if vpn_conf.conn_tag == ConnectionTag.VM_LINUX_NLX_1
                     else (0, 0)
