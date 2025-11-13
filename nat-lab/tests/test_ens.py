@@ -353,20 +353,16 @@ async def test_ens_not_working(
     alpha_setup_params: SetupParameters,
     public_ip: str,
 ) -> None:
-    vpn_conf = VpnConfig(config.WG_SERVER, ConnectionTag.DOCKER_VPN_1, True)
-    async with AsyncExitStack() as exit_stack:
-        await set_vpn_server_private_key(
-            vpn_conf.server_conf["ipv4"],
-            vpn_conf.server_conf["private_key"],
-        )
+    vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, True)
 
+    async with AsyncExitStack() as exit_stack:
         alpha_setup_params.connection_tracker_config = (
             generate_connection_tracker_config(
                 alpha_setup_params.connection_tag,
                 stun_limits=(1, 1),
                 vpn_1_limits=(
                     (1, 1)
-                    if vpn_conf.conn_tag == ConnectionTag.DOCKER_VPN_1
+                    if vpn_conf.conn_tag == ConnectionTag.VM_LINUX_NLX_1
                     else (0, 0)
                 ),
             )
