@@ -197,7 +197,7 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
             generate_connection_tracker_config(
                 alpha_setup_params.connection_tag,
                 stun_limits=(1, 1),
-                vpn_1_limits=(
+                nlx_1_limits=(
                     (1, 1)
                     if vpn_conf.conn_tag == ConnectionTag.VM_LINUX_NLX_1
                     else (0, 0)
@@ -335,7 +335,7 @@ async def test_ens_not_working(
     alpha_setup_params: SetupParameters,
     public_ip: str,
 ) -> None:
-    vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, True)
+    vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, False)
 
     async with AsyncExitStack() as exit_stack:
         alpha_setup_params.connection_tracker_config = (
@@ -369,7 +369,7 @@ async def test_ens_not_working(
 
         await connect_vpn(
             client_conn,
-            vpn_connection.connection,
+            None,
             client_alpha,
             alpha.ip_addresses[0],
             vpn_conf.server_conf,
