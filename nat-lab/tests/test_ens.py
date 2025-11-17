@@ -187,11 +187,11 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
     alpha_setup_params: SetupParameters,
     public_ip: str,
 ) -> None:
-    vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, True)
-    wrong_cert = generate_wrong_cert()
+    vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, False)
     error_code = VpnConnectionError.UNKNOWN
 
     async with AsyncExitStack() as exit_stack:
+        wrong_cert = await generate_wrong_cert()
 
         alpha_setup_params.connection_tracker_config = (
             generate_connection_tracker_config(
@@ -278,6 +278,18 @@ async def get_grpc_tls_root_certificate(vpn_ip, incorrect=False):
     json = await make_get_json(url)
     return json["root_certificate"]
 
+
+async def generate_wrong_cert() -> bytes:
+    wg_conf = VpnConfig(config.WG_SERVER, ConnectionTag.DOCKER_VPN_1, True)
+
+    vpn_ip = cast(str, wg_conf.server_conf["ipv4"])
+
+    root_certificate_b64 = await get_grpc_tls_root_certificate(
+        vpn_ip,
+        incorrect=True,
+    )
+
+    return base64.b64decode(root_certificate_b64)
 
 async def make_get_json(url):
     async with aiohttp.ClientSession() as session:
