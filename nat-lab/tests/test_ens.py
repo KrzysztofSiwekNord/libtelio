@@ -189,10 +189,8 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
 ) -> None:
     vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, False)
     error_code = VpnConnectionError.UNKNOWN
-
+    root_certificate = await generate_wrong_cert()
     async with AsyncExitStack() as exit_stack:
-        wrong_cert = await generate_wrong_cert()
-
         alpha_setup_params.connection_tracker_config = (
             generate_connection_tracker_config(
                 alpha_setup_params.connection_tag,
@@ -207,7 +205,7 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
         assert alpha_setup_params.features.error_notification_service
         alpha_setup_params.features.error_notification_service.allow_only_pq = False
         alpha_setup_params.features.error_notification_service.root_certificate_override = (
-            wrong_cert
+            root_certificate
         )
         env = await exit_stack.enter_async_context(
             setup_environment(exit_stack, [alpha_setup_params], prepare_vpn=True)
@@ -281,15 +279,11 @@ async def get_grpc_tls_root_certificate(vpn_ip, incorrect=False):
 
 async def generate_wrong_cert() -> bytes:
     wg_conf = VpnConfig(config.WG_SERVER, ConnectionTag.DOCKER_VPN_1, True)
-
     vpn_ip = cast(str, wg_conf.server_conf["ipv4"])
-
-    root_certificate_b64 = await get_grpc_tls_root_certificate(
-        vpn_ip,
-        incorrect=True,
-    )
-
-    return base64.b64decode(root_certificate_b64)
+    url = f"http://{vpn_ip}:8000/api/incorrect_root_certificate"
+    json = await make_get_json(url)
+    root_certificate = json["root_certificate"]
+    return base64.b64decode(root_certificate)
 
 async def make_get_json(url):
     async with aiohttp.ClientSession() as session:
