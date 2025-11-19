@@ -189,7 +189,7 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
 ) -> None:
     vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, False)
     error_code = VpnConnectionError.UNKNOWN
-    fingerprint = await get_grpc_tls_fingerprint(vpn_conf.server_conf["ipv4"])
+    fingerprint = await get_grpc_tls_fingerprint()
     root_certificate = await generate_wrong_cert()
     async with AsyncExitStack() as exit_stack:
         alpha_setup_params.connection_tracker_config = (
