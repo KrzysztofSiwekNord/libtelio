@@ -6,7 +6,7 @@ import pytest
 from contextlib import AsyncExitStack
 from helpers import SetupParameters, setup_environment, setup_connections
 from helpers_vpn import connect_vpn, VpnConfig
-from typing import cast
+from typing import cast, Optional
 from utils import stun
 from utils.bindings import (
     default_features,
@@ -189,6 +189,7 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
 ) -> None:
     vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, False)
     error_code = VpnConnectionError.UNKNOWN
+    fingerprint = await get_grpc_tls_fingerprint(vpn_conf.server_conf["ipv4"])
     root_certificate = await generate_wrong_cert()
     async with AsyncExitStack() as exit_stack:
         alpha_setup_params.connection_tracker_config = (
@@ -236,6 +237,7 @@ async def test_ens_will_not_emit_errors_from_incorrect_tls_session(
                 vpn_connection_error=error_code,
             )
 
+        await client_alpha.wait_for_log(fingerprint)
         await client_alpha.wait_for_log("InvalidCertificate(UnknownIssuer)")
 
 
@@ -261,7 +263,10 @@ async def make_post(url, data):
             return None
 
 
-async def get_grpc_tls_fingerprint(vpn_ip):
+async def get_grpc_tls_fingerprint(vpn_ip: Optional[str] = None):
+    if vpn_ip is None:
+        wg_conf = VpnConfig(config.WG_SERVER, ConnectionTag.DOCKER_VPN_1, True)
+        vpn_ip = str(wg_conf.server_conf["ipv4"])
     url = f"http://{vpn_ip}:8000/api/grpc_tls_fingerprint"
     json = await make_get_json(url)
     return json["fingerprint"]
