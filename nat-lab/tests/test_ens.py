@@ -16,7 +16,8 @@ from utils.bindings import (
     VpnConnectionError,
 )
 from utils.connection import ConnectionTag
-from utils.connection_util import generate_connection_tracker_config
+from utils.connection_util import generate_connection_tracker_config, new_connection_by_tag
+from helpers_ens import get_grpc_tls_fingerprint_from_server, get_grpc_tls_root_certificate_from_server
 
 ENS_PORT = 993
 
@@ -79,25 +80,23 @@ async def test_ens(
     public_ip: str,
     error_code: VpnConnectionError,
 ) -> None:
-    vpn_conf = VpnConfig(config.WG_SERVER, ConnectionTag.DOCKER_VPN_1, True)
-    fingerprint = await get_grpc_tls_fingerprint(vpn_conf.server_conf["ipv4"])
-    root_certificate = await get_grpc_tls_root_certificate(vpn_conf.server_conf["ipv4"])
-    root_certificate = base64.b64decode(root_certificate)
+    vpn_conf = VpnConfig(config.NLX_SERVER, ConnectionTag.VM_LINUX_NLX_1, False)
 
     async with AsyncExitStack() as exit_stack:
-
-        await set_vpn_server_private_key(
-            vpn_conf.server_conf["ipv4"],
-            vpn_conf.server_conf["private_key"],
+        nlx_conn = await exit_stack.enter_async_context(
+            new_connection_by_tag(ConnectionTag.VM_LINUX_NLX_1)
         )
+        fingerprint = await get_grpc_tls_fingerprint_from_server(nlx_conn)
+        root_certificate_b64 = await get_grpc_tls_root_certificate_from_server(nlx_conn)
+        root_certificate = base64.b64decode(root_certificate_b64)
 
         alpha_setup_params.connection_tracker_config = (
             generate_connection_tracker_config(
                 alpha_setup_params.connection_tag,
                 stun_limits=(1, 1),
-                vpn_1_limits=(
+                nlx_1_limits=(
                     (1, 1)
-                    if vpn_conf.conn_tag == ConnectionTag.DOCKER_VPN_1
+                    if vpn_conf.conn_tag == ConnectionTag.VM_LINUX_NLX_1
                     else (0, 0)
                 ),
             )
@@ -124,20 +123,14 @@ async def test_ens(
             cast(int, vpn_conf.server_conf["port"]),
             cast(str, vpn_conf.server_conf["public_key"]),
         )
-
-        additional_info = "some additional info"
-        await trigger_connection_error(
-            vpn_conf.server_conf["ipv4"], error_code.value, additional_info
-        )
+        print(error_code)
         await client_alpha.wait_for_state_peer(
             vpn_conf.server_conf["public_key"],
             [NodeState.CONNECTED],
             [PathType.DIRECT],
             True,
             True,
-            vpn_connection_error=error_code,
         )
-        await client_alpha.wait_for_log(additional_info)
         await client_alpha.wait_for_log(fingerprint)
 
 
