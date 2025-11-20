@@ -579,23 +579,22 @@ async def _save_macos_logs(conn, suffix):
         log.warning("Failed to collect dmesg logs %s", e)
 
 
-async def collect_kernel_logs(items, suffix):
+async def collect_kernel_logs(suffix):
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
 
     save_dmesg_from_host(suffix)
     save_audit_log_from_host(suffix)
 
-    for item in items:
-        if any(mark.name == "mac" for mark in item.own_markers):
-            try:
-                async with SshConnection.new_connection(
-                    LAN_ADDR_MAP[ConnectionTag.VM_MAC]["primary"], ConnectionTag.VM_MAC
-                ) as conn:
-                    await _save_macos_logs(conn, suffix)
-            except OSError as e:
-                if os.environ.get("GITLAB_CI"):
-                    raise e
+    if "mac" in SESSION_VM_MARKS:
+        try:
+            async with SshConnection.new_connection(
+                LAN_ADDR_MAP[ConnectionTag.VM_MAC]["primary"], ConnectionTag.VM_MAC
+            ) as conn:
+                await _save_macos_logs(conn, suffix)
+        except OSError as e:
+            if os.environ.get("GITLAB_CI"):
+                raise e
 
 
 def _get_session_vm_marks(items):
@@ -615,7 +614,7 @@ def pytest_runtestloop(session):
             pytest.exit("Setup checks failed, exiting ...")
 
         if os.environ.get("NATLAB_SAVE_LOGS") is not None:
-            asyncio.run(collect_kernel_logs(session.items, "before_tests"))
+            asyncio.run(collect_kernel_logs("before_tests"))
 
         asyncio.run(_copy_vm_binaries_if_needed())
 
@@ -639,23 +638,27 @@ def pytest_sessionstart(session):
 
 # pylint: disable=unused-argument
 def pytest_sessionfinish(session, exitstatus):
-    if os.environ.get("NATLAB_SAVE_LOGS") is None:
+    if os.environ.get("NATLAB_SAVE_LOGS") is None or session.config.option.collectonly:
         return
 
-    if not session.config.option.collectonly:
-        if RUNNER is not None and SESSION_SCOPE_EXIT_STACK is not None:
-            try:
-                RUNNER.run(SESSION_SCOPE_EXIT_STACK.aclose())
-            finally:
-                RUNNER.close()
-        elif RUNNER is not None:
+    if RUNNER is not None and SESSION_SCOPE_EXIT_STACK is not None:
+        try:
+            RUNNER.run(SESSION_SCOPE_EXIT_STACK.aclose())
+        finally:
             RUNNER.close()
-        collect_nordderper_logs()
-        collect_dns_server_logs()
-        collect_core_api_server_logs()
-        asyncio.run(collect_kernel_logs(session.items, "after_tests"))
-        asyncio.run(collect_mac_diagnostic_reports())
-        asyncio.run(save_fakefm_logs())
+    elif RUNNER is not None:
+        RUNNER.close()
+
+    asyncio.run(collect_logs())
+
+
+async def collect_logs():
+    collect_nordderper_logs()
+    collect_dns_server_logs()
+    collect_core_api_server_logs()
+    await collect_kernel_logs("after_tests")
+    await collect_mac_diagnostic_reports()
+    await save_fakefm_logs()
 
 
 def collect_nordderper_logs():
@@ -715,23 +718,22 @@ def copy_file_from_container(container_name, src_path, dst_path):
 
 async def collect_mac_diagnostic_reports():
     is_ci = "GITLAB_CI" in os.environ
-    if not (is_ci or "NATLAB_COLLECT_MAC_DIAGNOSTIC_LOGS" in os.environ):
+    if not (
+        is_ci
+        or "NATLAB_COLLECT_MAC_DIAGNOSTIC_LOGS" in os.environ
+        or "mac" in SESSION_VM_MARKS
+    ):
         return
     log.info("Collect mac diagnostic reports")
-    try:
-        async with SshConnection.new_connection(
-            LAN_ADDR_MAP[ConnectionTag.VM_MAC]["primary"], ConnectionTag.VM_MAC
-        ) as connection:
-            await connection.download(
-                "/Library/Logs/DiagnosticReports", "logs/system_diagnostic_reports"
-            )
-            await connection.download(
-                "/root/Library/Logs/DiagnosticReports", "logs/user_diagnostic_reports"
-            )
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        log.error("Failed to connect to the mac VM: %s", e)
-        if is_ci:
-            raise e
+    async with SshConnection.new_connection(
+        LAN_ADDR_MAP[ConnectionTag.VM_MAC]["primary"], ConnectionTag.VM_MAC
+    ) as connection:
+        await connection.download(
+            "/Library/Logs/DiagnosticReports", "logs/system_diagnostic_reports"
+        )
+        await connection.download(
+            "/root/Library/Logs/DiagnosticReports", "logs/user_diagnostic_reports"
+        )
 
 
 async def start_tcpdump_processes():
