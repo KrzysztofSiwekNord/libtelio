@@ -182,6 +182,7 @@ markers = [
     "utils: tests the natlab utilities",
     "openwrt: tests that require OpenWrt VM to be running",
 ]
+pythonpath = ["tests"]
 
 [tool.pyright]
 exclude = ["**/.venv"]

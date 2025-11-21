@@ -66,6 +66,9 @@ async def new_connection_raw(
     tag: ConnectionTag,
 ) -> AsyncIterator[Connection]:
     try:
+        # When Pytest imports the enum from different paths, it produces distinct enum classes
+        # Problem happens when running performance tests
+        tag = ConnectionTag(tag.value)
         if tag in DOCKER_SERVICE_IDS:
             async with Docker() as docker:
                 async with DockerConnection.new_connection(docker, tag) as connection:
@@ -84,6 +87,9 @@ async def new_connection_raw(
 async def create_network_switcher(
     tag: ConnectionTag, connection: Connection
 ) -> NetworkSwitcher:
+    # When Pytest imports the enum from different paths, it produces distinct enum classes
+    # Problem happens when running performance tests
+    tag = ConnectionTag(tag.value)
     if tag in DOCKER_SERVICE_IDS:
         return NetworkSwitcherDocker(connection)
     if tag in [ConnectionTag.VM_WINDOWS_1, ConnectionTag.VM_WINDOWS_2]:
@@ -193,6 +199,9 @@ def generate_connection_tracker_config(
     derp_2_limits: tuple[Optional[int], Optional[int]] = (0, 0),
     derp_3_limits: tuple[Optional[int], Optional[int]] = (0, 0),
 ) -> List[ConnTrackerEventsValidator]:
+    # When Pytest imports the enum from different paths, it produces distinct enum classes
+    # Problem happens when running performance tests
+    connection_tag = ConnectionTag(connection_tag.value)
     lan_addr = LAN_ADDR_MAP[connection_tag]["primary"]
     ctc_list = [
         ConnectionCountLimit.create_with_tuple(

@@ -167,11 +167,13 @@ async def setup_connections(
 
     A list of the Telio connection managers of the connections corresponding to the provided connection tags
     """
-
     return await asyncio.gather(*[
         (
-            exit_stack.enter_async_context(new_connection_manager_by_tag(param, None))
-            if isinstance(param, ConnectionTag)
+            exit_stack.enter_async_context(
+                new_connection_manager_by_tag(ConnectionTag(param.value), None)
+            )
+            if hasattr(param, "value")
+            and isinstance(ConnectionTag(param.value), ConnectionTag)
             else exit_stack.enter_async_context(new_connection_manager_by_tag(*param))
         )
         for param in connection_parameters
