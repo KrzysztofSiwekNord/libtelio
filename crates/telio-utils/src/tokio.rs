@@ -100,7 +100,10 @@ impl Monitor for Arc<parking_lot::Mutex<ThreadTracker>> {
             loop {
                 sleep(ALERT_DURATION);
                 let now = crate::Instant::now();
+                telio_log_warn!("Just before lock");
                 let thread_tracker = self.lock();
+                telio_log_warn!("Just after lock");
+                // TODO: how frequent calls to here are? does it cause potential spede issues?
                 let time_since_last_change = now - thread_tracker.last_change;
                 thread_tracker.check_for_long_unparked_threads();
                 if time_since_last_change > ALERT_DURATION
