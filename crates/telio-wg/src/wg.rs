@@ -154,7 +154,7 @@ struct State {
     last_update: Instant,
 }
 
-const MAX_UAPI_FAIL_COUNT: i32 = 10;
+const MAX_UAPI_FAIL_COUNT: i32 = 2;
 
 impl DynamicWg {
     /// Starts the WireGuard adapter with the given parameters.
