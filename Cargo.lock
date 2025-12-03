@@ -2628,7 +2628,7 @@ dependencies = [
 [[package]]
 name = "neptun"
 version = "0.6.0"
-source = "git+https://github.com/KrzysztofSiwekNord/NepTUN.git?branch=apple_tests#238d4ec6faa30dde96d2ce2b6fac4e3627ee90d3"
+source = "git+https://github.com/KrzysztofSiwekNord/NepTUN.git?branch=apple_tests#89d3562d28796bbf3597c8e317aa26a06f84c824"
 dependencies = [
  "aead",
  "base64 0.13.1",
