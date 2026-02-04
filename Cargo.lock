@@ -2801,14 +2801,13 @@ dependencies = [
 [[package]]
 name = "neptun"
 version = "2.2.3"
-source = "git+https://github.com/NordSecurity/neptun.git?tag=v2.2.4#41c6bfc088ffd45623abf9642aa90e96cb839bcf"
+source = "git+https://github.com/KrzysztofSiwekNord/NepTUN.git?branch=apple_experiments#abc0a5bd3a75fc9569787b145496ca5e89a979ec"
 dependencies = [
  "aead",
  "base64 0.13.1",
  "blake2",
  "chacha20poly1305",
  "crossbeam-channel",
- "dispatch 0.2.0 (git+https://github.com/NordSecurity/rust-dispatch.git?rev=13447cd7221a74ebcce1277ae0cfc9a421a28ec5)",
  "hex",
  "hmac",
  "ip_network",
