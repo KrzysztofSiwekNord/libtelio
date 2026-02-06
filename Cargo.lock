@@ -2800,14 +2800,13 @@ dependencies = [
 
 [[package]]
 name = "neptun"
-version = "2.2.3"
-source = "git+https://github.com/NordSecurity/neptun.git?tag=v2.2.4#41c6bfc088ffd45623abf9642aa90e96cb839bcf"
+version = "0.6.0"
+source = "git+https://github.com/NordSecurity/neptun.git?rev=3d1850c23c8854b3cdfeac23acb60b68fea30eeb#3d1850c23c8854b3cdfeac23acb60b68fea30eeb"
 dependencies = [
  "aead",
  "base64 0.13.1",
  "blake2",
  "chacha20poly1305",
- "crossbeam-channel",
  "dispatch 0.2.0 (git+https://github.com/NordSecurity/rust-dispatch.git?rev=13447cd7221a74ebcce1277ae0cfc9a421a28ec5)",
  "hex",
  "hmac",
@@ -2815,11 +2814,10 @@ dependencies = [
  "ip_network_table",
  "libc",
  "nix 0.29.0",
- "num_cpus",
  "parking_lot",
  "rand_core 0.6.4",
  "ring",
- "socket2 0.6.0",
+ "socket2 0.5.10",
  "thiserror 1.0.69",
  "tracing",
  "untrusted 0.9.0",
