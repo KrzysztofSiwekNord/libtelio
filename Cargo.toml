@@ -169,7 +169,7 @@ windows = { version = "0.61", features = [
 ] }
 winreg = "0.50.0"
 
-neptun = { git = "https://github.com/NordSecurity/neptun.git", rev = "6d4ba789aebffa38d7172848b61598d697fcda73", features = [
+neptun = { git = "https://github.com/NordSecurity/neptun.git", rev = "dcb996935aeeaaea0269faecd027701e7a9104a8", features = [
   "device",
 ] }
 x25519-dalek = { version = "2.0.1", features = [
