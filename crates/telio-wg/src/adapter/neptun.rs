@@ -59,11 +59,7 @@ impl NepTUN {
                     1
                 }
             },
-            use_connected_socket: cfg!(not(any(
-                target_os = "ios",
-                target_os = "macos",
-                target_os = "tvos"
-            ))),
+            use_connected_socket: true,
             #[cfg(target_os = "linux")]
             use_multi_queue: true,
             open_uapi_socket: false,
