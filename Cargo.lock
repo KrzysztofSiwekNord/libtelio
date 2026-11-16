@@ -2669,14 +2669,13 @@ dependencies = [
 [[package]]
 name = "neptun"
 version = "2.2.3"
-source = "git+https://github.com/NordSecurity/neptun.git?tag=v3.0.6#ce185155e1639403cc40e01260d0830065a49555"
+source = "git+https://github.com/KrzysztofSiwekNord/NepTUN.git?branch=p_cores_fix#3d276a37759fa16686523a233d6376d8e33eb94f"
 dependencies = [
  "aead",
  "base64 0.22.1",
  "blake2",
  "chacha20poly1305",
  "crossbeam-channel",
- "dispatch2",
  "hex",
  "hmac 0.12.1",
  "ip_network",
