@@ -43,7 +43,8 @@ impl NepTUN {
         use std::os::fd::RawFd;
 
         let config = DeviceConfig {
-            // Apple's NepTUN device runs most efficiently on a single perf-core
+            // On Apple platforms NepTUN has one event loop thread and starts its
+            // worker threads itself (one for the UDP send, one for the tunnel write)
             n_threads: {
                 if cfg!(target_os = "android") {
                     // A large set of supported android devices
@@ -59,11 +60,7 @@ impl NepTUN {
                     1
                 }
             },
-            use_connected_socket: cfg!(not(any(
-                target_os = "ios",
-                target_os = "macos",
-                target_os = "tvos"
-            ))),
+            use_connected_socket: true,
             #[cfg(target_os = "linux")]
             use_multi_queue: true,
             open_uapi_socket: false,
